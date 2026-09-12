@@ -119,11 +119,14 @@ class LLMEngine:
         """Blocking single-prompt helper. Real callers drive step() themselves."""
         tokenizer = self._get_tokenizer()
         if chat and tokenizer.chat_template:
-            prompt_token_ids = tokenizer.apply_chat_template(
+            # Render to text and tokenize separately: apply_chat_template(tokenize=True)
+            # returns a plain list in transformers 4.x but a BatchEncoding in 5.x.
+            prompt = tokenizer.apply_chat_template(
                 [{"role": "user", "content": prompt}],
                 add_generation_prompt=True,
-                tokenize=True,
+                tokenize=False,
             )
+            prompt_token_ids = tokenizer(prompt, add_special_tokens=False).input_ids
         else:
             prompt_token_ids = tokenizer(prompt).input_ids
 

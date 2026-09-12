@@ -16,20 +16,19 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
 
 class RotaryEmbedding(nn.Module):
     """Precomputed cos/sin tables. Buffers are non-persistent, so state_dict stays clean
-    and the module can be shared across layers without affecting weight loading."""
+    and the module can be shared across layers without affecting weight loading.
 
-    def __init__(
-        self,
-        head_dim: int,
-        max_position_embeddings: int,
-        base: float,
-        device: torch.device,
-    ) -> None:
+    Tables are built by ambient factory calls, so they land on whatever device the model
+    is being constructed under, and are pinned to fp32 regardless of the model dtype --
+    fp16 rope tables measurably degrade long-context positions.
+    """
+
+    def __init__(self, head_dim: int, max_position_embeddings: int, base: float) -> None:
         super().__init__()
         inv_freq = 1.0 / (
-            base ** (torch.arange(0, head_dim, 2, dtype=torch.float32, device=device) / head_dim)
+            base ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim)
         )
-        positions = torch.arange(max_position_embeddings, dtype=torch.float32, device=device)
+        positions = torch.arange(max_position_embeddings, dtype=torch.float32)
         freqs = torch.outer(positions, inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
         self.register_buffer("cos_cached", emb.cos(), persistent=False)

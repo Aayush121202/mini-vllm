@@ -50,7 +50,14 @@ The parity suite is the Phase 0 gate:
 |---|---|
 | `test_prefill_logits_match_hf` | wrong RoPE convention, RMSNorm precision, GQA head mapping |
 | `test_decode_logits_match_prefill` | KV cache offset and position bugs, with no reference needed |
+| `test_decode_logits_match_hf_incremental` | the strongest oracle: cached decode vs cached decode, currently exact (0.0) |
 | `test_greedy_decode_matches_hf` | drift that only appears after several steps |
+| `test_runs_on_accelerator` | buffers left behind on CPU when weights move to MPS/CUDA |
+
+Current Phase 0 results on Qwen2.5-0.5B-Instruct (fp32, CPU): prefill logits and cached
+decode logits are both **bit-identical** to HuggingFace (max |Δ| = 0.0), and 32 greedy
+tokens match token-for-token. The tests keep a 1e-4 tolerance as headroom for BLAS and
+library-version drift rather than because any is currently observed.
 
 ## Layout
 

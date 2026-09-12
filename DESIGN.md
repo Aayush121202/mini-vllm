@@ -201,7 +201,7 @@ complete, defensible system.
 - [x] Safetensors loader with tied-embedding handling
 - [x] Sampler: greedy + temperature/top-k/top-p, seeded
 - [x] Parity test vs HF (logits + greedy token match)
-- [ ] `pytest -m slow` green on your machine
+- [x] `pytest -m slow` green (24 tests, CPU + MPS)
 
 ---
 
@@ -215,6 +215,19 @@ complete, defensible system.
   Ampere+; fp32 on CPU/MPS for parity tests. Parity thresholds differ per dtype and live in the
   test.
 - **Use `apply_chat_template`.** Hand-rolled prompt formatting silently wrecks output quality.
+- **HF's `generate(do_sample=False)` is not greedy decoding.** Qwen2.5 ships
+  `repetition_penalty: 1.1` in `generation_config.json`, and HF applies logits processors
+  regardless of `do_sample`. A parity test against the bare default diverges within ~3
+  tokens and looks exactly like a KV cache bug. Pass an explicit `GenerationConfig`.
+- **Prefill and incremental decode will never be bit-identical**, even in fp32: GEMM over
+  a whole sequence and GEMV per token accumulate in different orders. Measured 3.03e-4 max
+  logit delta on Qwen2.5-0.5B -- and HF shows *the same* delta between its own two paths.
+  Do not chase it. Compare like with like: our cached decode matches HF's cached decode
+  to 0.0.
+- **Non-parameter buffers do not follow the weights.** Rope tables built with an explicit
+  `device=` argument stay there while `nn.Parameter`s move, producing a device-mismatch
+  crash that the CPU-only parity suite cannot catch. Build them via ambient factory calls
+  under `with torch.device(...)`, and keep an accelerator smoke test.
 - **Chunked prefill needs a real attention mask** (`start_pos > 0` with multiple query tokens).
   Phase 0's `is_causal` shortcut is only valid for a full prefill from position 0. Marked TODO in
   `layers/attention.py`.
