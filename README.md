@@ -183,6 +183,16 @@ while engine.has_unfinished_requests():
 `GET /stats` reports live scheduler state: running, waiting, KV utilisation, preemptions,
 and prompt tokens reused.
 
+## Running it on a real GPU
+
+Everything above was measured on an Apple M5. To reproduce on NVIDIA hardware — including
+**logit parity against HuggingFace on CUDA**, which is what makes the correctness claim
+hardware-independent — open [`bench/kaggle.ipynb`](bench/kaggle.ipynb) on Kaggle
+(Settings → Accelerator → GPU T4 x2) or Colab and run it top to bottom.
+
+Both free tiers give Turing (sm_75). That is the reason this project hand-rolls its
+attention path instead of depending on FlashAttention-2, which requires Ampere or newer.
+
 ## Tests
 
 ```bash
