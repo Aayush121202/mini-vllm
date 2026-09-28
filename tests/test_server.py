@@ -122,3 +122,33 @@ def test_disconnecting_mid_stream_frees_the_slot(client):
 
     second = disconnect_midway(client, "Write a long story about a lighthouse.")
     assert second["blocks_used"] == first["blocks_used"], "blocks leaked across disconnects"
+
+
+def test_root_serves_the_ui(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    body = response.text
+    # The script addresses these by id; if one is renamed the dashboard silently
+    # stops updating, which no other test would catch.
+    for element_id in ("tps", "spark", "kv-fill", "kv-pct", "running", "waiting",
+                       "preemptions", "hits", "reused", "total", "fire", "composer"):
+        assert f'id="{element_id}"' in body, f"missing #{element_id}"
+
+
+def test_stats_exposes_everything_the_dashboard_reads(client):
+    stats = client.get("/stats").json()
+    required = {
+        "running", "waiting", "kv_utilization", "blocks_used", "blocks_total",
+        "preemptions", "cached_prompt_tokens", "prefix_cache_hits", "total_output_tokens",
+    }
+    assert required <= stats.keys()
+
+
+def test_total_output_tokens_is_monotonic(client):
+    """The client differences successive polls to get tokens/s, so the counter must
+    only ever increase -- a reset would render as a negative rate."""
+    before = client.get("/stats").json()["total_output_tokens"]
+    client.post("/v1/chat/completions", json=chat_body("Name a colour."))
+    after = client.get("/stats").json()["total_output_tokens"]
+    assert after > before

@@ -93,6 +93,15 @@ Serve it:
 python -m mini_vllm.server --model Qwen/Qwen2.5-0.5B-Instruct --dtype float16
 ```
 
+Then open <http://127.0.0.1:8000> for the demo UI: streaming chat on the left, live
+scheduler internals on the right — running vs waiting, KV cache utilisation, preemptions,
+prefix-cache hits, throughput. The **"fire 8 concurrent"** button is the whole project in
+one click: eight requests enter the scheduler together, share every forward pass, and
+finish at roughly 4.5× the throughput of the same work done one request at a time
+(measured 109.6 vs 24.5 tok/s on an M5).
+
+One HTML file, no build step — FastAPI serves it.
+
 It speaks OpenAI, so any existing client works:
 
 ```python

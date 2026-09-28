@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mini-vllm</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --page: #f9f9f7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #898781;
+    --gridline: #e1e0d9;
+    --baseline: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --accent: #2a78d6;
+    --accent-track: #cde2fb;
+    /* Fixed status palette, not series colours -- the meter shows exactly one of
+       these at a time. On the light surface --warning is 1.79:1 by design, so the
+       percentage beside the bar is the required relief: colour never carries the
+       meaning alone. The accent passes every check in both modes. */
+    --warning: #fab219;
+    --critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --page: #0d0d0d;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted: #898781;
+      --gridline: #2c2c2a;
+      --baseline: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --accent: #3987e5;
+      --accent-track: #184f95;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --gridline: #2c2c2a;
+    --baseline: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --accent: #3987e5;
+    --accent-track: #184f95;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--page);
+    color: var(--text-primary);
+  }
+  .viz-root { min-height: 100%; background: var(--page); padding: 20px; }
+
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
+  h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  .tagline { color: var(--text-secondary); font-size: 13px; }
+  #theme {
+    margin-left: auto; font: inherit; font-size: 12px; cursor: pointer;
+    background: var(--surface-1); color: var(--text-secondary);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+  }
+
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+  @media (max-width: 860px) { main { grid-template-columns: minmax(0, 1fr); } }
+
+  .pane {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px;
+  }
+  .pane-title {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text-muted); margin-bottom: 12px;
+  }
+
+  /* chat */
+  #messages { min-height: 180px; max-height: 42vh; overflow-y: auto; }
+  .msg { margin-bottom: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg .who {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text-muted); display: block; margin-bottom: 2px;
+  }
+  .empty { color: var(--text-muted); }
+  form { display: flex; gap: 8px; margin-top: 12px; }
+  textarea {
+    flex: 1; font: inherit; resize: vertical; min-height: 40px;
+    color: var(--text-primary); background: var(--page);
+    border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px;
+  }
+  button.action {
+    font: inherit; font-weight: 500; cursor: pointer; white-space: nowrap;
+    border-radius: 8px; padding: 9px 14px; border: 1px solid transparent;
+    background: var(--accent); color: #ffffff;
+  }
+  button.secondary {
+    background: var(--surface-1); color: var(--text-primary); border-color: var(--border);
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+
+  #burst { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+  @media (max-width: 700px) { #burst { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .burst-card {
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px;
+    font-size: 12px; height: 92px; overflow: hidden; color: var(--text-secondary);
+  }
+  .burst-card .n {
+    font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
+    color: var(--text-muted); display: block; margin-bottom: 3px;
+  }
+
+  /* hero + sparkline */
+  .hero-label { font-size: 12px; color: var(--text-secondary); }
+  .hero {
+    font-size: 48px; font-weight: 600; line-height: 1.05; letter-spacing: -0.02em;
+    margin: 2px 0 0;
+  }
+  .hero .unit { font-size: 16px; font-weight: 500; color: var(--text-secondary); margin-left: 4px; }
+  #spark { display: block; width: 100%; height: 44px; margin-top: 6px; }
+  #spark-read { font-size: 11px; color: var(--text-muted); min-height: 16px; }
+
+  /* meter */
+  .block { margin-top: 20px; }
+  .block-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;
+  }
+  .block-head .val { font-weight: 600; color: var(--text-primary); }
+  .track { height: 8px; border-radius: 4px; background: var(--accent-track); overflow: hidden; }
+  .fill { height: 100%; width: 0%; border-radius: 4px; background: var(--accent); transition: width 0.2s linear; }
+  .sub { font-size: 11px; color: var(--text-muted); margin-top: 5px; }
+
+  /* stat tiles */
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 12px; margin-top: 20px; }
+  .tile-label { font-size: 12px; color: var(--text-secondary); }
+  .tile-value { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+  .divider { height: 1px; background: var(--gridline); margin: 20px 0 0; }
+</style>
+</head>
+<body>
+<div class="viz-root">
+  <header>
+    <h1>mini-vllm</h1>
+    <span class="tagline">paged KV cache · continuous batching · prefix caching</span>
+    <button id="theme" type="button">Dark</button>
+  </header>
+
+  <main>
+    <section class="pane">
+      <div class="pane-title">Chat</div>
+      <div id="messages" aria-live="polite"><div class="empty">Ask something, or fire eight
+        requests at once and watch the batch form on the right.</div></div>
+      <form id="composer">
+        <textarea id="input" rows="1" placeholder="Explain paging in one sentence."
+                  aria-label="Message"></textarea>
+        <button class="action" type="submit" id="send">Send</button>
+        <button class="action secondary" type="button" id="fire">Fire 8 concurrent</button>
+      </form>
+      <div id="burst" hidden></div>
+    </section>
+
+    <aside class="pane">
+      <div class="pane-title">Engine</div>
+
+      <div class="hero-label">Throughput</div>
+      <div class="hero"><span id="tps">0</span><span class="unit">tok/s</span></div>
+      <svg id="spark" viewBox="0 0 240 44" preserveAspectRatio="none" role="img"
+           aria-label="Throughput over the last 12 samples"></svg>
+      <div id="spark-read"></div>
+
+      <div class="block">
+        <div class="block-head"><span>KV cache used</span><span class="val" id="kv-pct">0%</span></div>
+        <div class="track"><div class="fill" id="kv-fill"></div></div>
+        <div class="sub" id="kv-blocks">0 of 0 blocks</div>
+      </div>
+
+      <div class="divider"></div>
+      <div class="tiles">
+        <div><div class="tile-label">Running</div><div class="tile-value" id="running">0</div></div>
+        <div><div class="tile-label">Waiting</div><div class="tile-value" id="waiting">0</div></div>
+        <div><div class="tile-label">Preemptions</div><div class="tile-value" id="preemptions">0</div></div>
+        <div><div class="tile-label">Prefix hits</div><div class="tile-value" id="hits">0</div></div>
+        <div><div class="tile-label">Tokens reused</div><div class="tile-value" id="reused">0</div></div>
+        <div><div class="tile-label">Tokens out</div><div class="tile-value" id="total">0</div></div>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<script>
+const SAMPLES = 12;
+const POLL_MS = 250;
+const history = new Array(SAMPLES).fill(0);
+const $ = (id) => document.getElementById(id);
+
+/* ---------- theme ---------- */
+const root = document.documentElement;
+function applyTheme(mode) {
+  if (mode) root.setAttribute("data-theme", mode); else root.removeAttribute("data-theme");
+  const dark = mode === "dark" ||
+    (!mode && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  $("theme").textContent = dark ? "Light" : "Dark";
+}
+applyTheme(localStorage.getItem("theme"));
+$("theme").addEventListener("click", () => {
+  const dark = root.getAttribute("data-theme") === "dark" ||
+    (!root.hasAttribute("data-theme") && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const next = dark ? "light" : "dark";
+  localStorage.setItem("theme", next);
+  applyTheme(next);
+});
+
+/* ---------- streaming ---------- */
+async function streamChat(content, onToken, maxTokens = 128) {
+  const res = await fetch("/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messages: [{ role: "user", content }],
+      max_tokens: maxTokens, temperature: 0.7, top_p: 0.9, stream: true,
+    }),
+  });
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return;
+    buffer += decoder.decode(value, { stream: true });
+    let cut;
+    while ((cut = buffer.indexOf("\n\n")) !== -1) {
+      const frame = buffer.slice(0, cut).trim();
+      buffer = buffer.slice(cut + 2);
+      if (!frame.startsWith("data: ")) continue;
+      const payload = frame.slice(6);
+      if (payload === "[DONE]") return;
+      const delta = JSON.parse(payload).choices[0].delta;
+      if (delta.content) onToken(delta.content);
+    }
+  }
+}
+
+/* ---------- chat pane ---------- */
+function addMessage(who, text) {
+  const empty = document.querySelector(".empty");
+  if (empty) empty.remove();
+  const el = document.createElement("div");
+  el.className = "msg";
+  const label = document.createElement("span");
+  label.className = "who";
+  label.textContent = who;
+  const body = document.createElement("span");
+  body.textContent = text;
+  el.append(label, body);
+  $("messages").append(el);
+  $("messages").scrollTop = $("messages").scrollHeight;
+  return body;
+}
+
+$("composer").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const content = $("input").value.trim();
+  if (!content) return;
+  $("input").value = "";
+  addMessage("You", content);
+  const target = addMessage("Assistant", "");
+  $("send").disabled = true;
+  try {
+    await streamChat(content, (token) => {
+      target.textContent += token;
+      $("messages").scrollTop = $("messages").scrollHeight;
+    });
+  } catch (error) {
+    target.textContent = "[" + error.message + "]";
+  } finally {
+    $("send").disabled = false;
+  }
+});
+
+/* ---------- the demo: eight at once ---------- */
+const BURST = [
+  "Name a colour.", "Name a fruit.", "Name a country.", "Name an animal.",
+  "Name a planet.", "Name a musical instrument.", "Name a river.", "Name a metal.",
+];
+
+$("fire").addEventListener("click", async () => {
+  const burst = $("burst");
+  burst.hidden = false;
+  burst.textContent = "";
+  $("fire").disabled = true;
+
+  const targets = BURST.map((prompt, i) => {
+    const card = document.createElement("div");
+    card.className = "burst-card";
+    const n = document.createElement("span");
+    n.className = "n";
+    n.textContent = "REQUEST " + (i + 1);
+    const body = document.createElement("span");
+    card.append(n, body);
+    burst.append(card);
+    return body;
+  });
+
+  // Fired together, not awaited in sequence -- the point is that all eight are in
+  // the scheduler at once and share every forward pass.
+  await Promise.all(BURST.map((prompt, i) =>
+    streamChat(prompt, (token) => { targets[i].textContent += token; }, 48)
+      .catch((error) => { targets[i].textContent = "[" + error.message + "]"; })
+  ));
+  $("fire").disabled = false;
+});
+
+/* ---------- live engine stats ---------- */
+function drawSparkline() {
+  const peak = Math.max(1, ...history);
+  const step = 240 / (SAMPLES - 1);
+  const points = history
+    .map((value, i) => (i * step).toFixed(1) + "," + (42 - (value / peak) * 38).toFixed(1))
+    .join(" ");
+  $("spark").innerHTML =
+    '<polyline fill="none" stroke="var(--accent)" stroke-width="2" ' +
+    'stroke-linejoin="round" stroke-linecap="round" points="' + points + '" />';
+}
+
+function updateMeter(fraction) {
+  const pct = Math.round(fraction * 1000) / 10;
+  $("kv-pct").textContent = pct + "%";
+  $("kv-fill").style.width = Math.min(100, fraction * 100) + "%";
+  // Severity carried by the fill, but the percentage beside it always states the
+  // value in words -- colour never carries the meaning alone.
+  const colour = fraction >= 0.95 ? "var(--critical)"
+    : fraction >= 0.8 ? "var(--warning)" : "var(--accent)";
+  $("kv-fill").style.background = colour;
+}
+
+let previous = null;
+async function poll() {
+  let stats;
+  try {
+    stats = await (await fetch("/stats")).json();
+  } catch { return; }
+
+  const now = performance.now();
+  if (previous) {
+    const seconds = (now - previous.at) / 1000;
+    const rate = seconds > 0 ? (stats.total_output_tokens - previous.tokens) / seconds : 0;
+    history.push(Math.max(0, rate));
+    history.shift();
+    $("tps").textContent = Math.round(history[history.length - 1]);
+    drawSparkline();
+    const peak = Math.max(...history);
+    $("spark-read").textContent = peak > 0
+      ? "peak " + Math.round(peak) + " tok/s over the last " + (SAMPLES * POLL_MS / 1000) + "s"
+      : "";
+  }
+  previous = { at: now, tokens: stats.total_output_tokens };
+
+  updateMeter(stats.kv_utilization);
+  $("kv-blocks").textContent = stats.blocks_used.toLocaleString() + " of " +
+    stats.blocks_total.toLocaleString() + " blocks";
+  $("running").textContent = stats.running;
+  $("waiting").textContent = stats.waiting;
+  $("preemptions").textContent = stats.preemptions;
+  $("hits").textContent = stats.prefix_cache_hits;
+  $("reused").textContent = stats.cached_prompt_tokens.toLocaleString();
+  $("total").textContent = stats.total_output_tokens.toLocaleString();
+}
+
+drawSparkline();
+poll();
+setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>

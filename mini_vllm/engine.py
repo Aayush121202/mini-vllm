@@ -135,6 +135,9 @@ class LLMEngine:
         self.sampler = Sampler()
         self._generators: dict[str, torch.Generator] = {}
         self._counter = itertools.count()
+        # Monotonic counter, not a rate. Clients difference successive /stats polls to
+        # get tokens/s, which keeps all windowing on the client and no timers here.
+        self.total_output_tokens = 0
         self.tokenizer = None  # lazily loaded; only generate() needs it
 
     # -- contract -----------------------------------------------------------------
@@ -185,6 +188,7 @@ class LLMEngine:
         )
 
         outputs = []
+        self.total_output_tokens += len(requests)
         for request, token_id in zip(requests, sampled.tolist()):
             request.append_token(token_id)
             request.check_stop()
@@ -202,6 +206,7 @@ class LLMEngine:
         return self.scheduler.has_unfinished()
 
     def stats(self) -> dict[str, float | int]:
+        prefix_cache = self.scheduler.prefix_cache
         return {
             "running": len(self.scheduler.running),
             "waiting": len(self.scheduler.waiting),
@@ -210,6 +215,8 @@ class LLMEngine:
             "blocks_total": self.runner.cache.num_blocks,
             "preemptions": self.scheduler.num_preemptions,
             "cached_prompt_tokens": self.scheduler.num_cached_tokens,
+            "prefix_cache_hits": prefix_cache.num_hits if prefix_cache else 0,
+            "total_output_tokens": self.total_output_tokens,
         }
 
     # -- convenience ---------------------------------------------------------------

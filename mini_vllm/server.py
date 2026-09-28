@@ -16,14 +16,17 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from mini_vllm.detokenizer import IncrementalDetokenizer
 from mini_vllm.engine import LLMEngine
 from mini_vllm.request import SamplingParams
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 # How long the engine loop sleeps when there is nothing to do. Short enough that a new
 # request is picked up promptly, long enough not to spin a core.
@@ -134,6 +137,11 @@ def build_app(engine: LLMEngine, served_model_name: str) -> FastAPI:
         await async_engine.stop()
 
     app = FastAPI(title="mini-vllm", lifespan=lifespan)
+
+    @app.get("/", include_in_schema=False)
+    async def index():
+        """The demo UI: streaming chat beside live scheduler internals."""
+        return FileResponse(STATIC_DIR / "index.html")
 
     @app.get("/health")
     async def health():
