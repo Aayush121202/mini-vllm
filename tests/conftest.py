@@ -14,7 +14,7 @@ def model_path():
 
     try:
         return resolve_model_path(TEST_MODEL)
-    except Exception as exc:  # offline, or no hub access
+    except Exception as exc:  # noqa: BLE001 - hub failures are many and all mean "skip"
         pytest.skip(f"could not resolve {TEST_MODEL}: {exc}")
 
 

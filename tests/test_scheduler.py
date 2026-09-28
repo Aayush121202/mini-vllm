@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 from mini_vllm.cache import PagedKVCache
-from mini_vllm.request import RequestStatus, Request, SamplingParams
+from mini_vllm.request import Request, RequestStatus, SamplingParams
 from mini_vllm.scheduler import Scheduler
 
 

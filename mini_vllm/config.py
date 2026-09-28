@@ -42,7 +42,7 @@ class ModelConfig:
         return self.num_attention_heads // self.num_key_value_heads
 
     @classmethod
-    def from_json(cls, model_path: str | Path) -> "ModelConfig":
+    def from_json(cls, model_path: str | Path) -> ModelConfig:
         path = Path(model_path)
         with open(path / "config.json") as f:
             hf = json.load(f)

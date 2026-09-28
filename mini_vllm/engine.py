@@ -167,9 +167,11 @@ class LLMEngine:
 
         requests = scheduled.requests
         if scheduled.is_prefill:
-            # Everything not already in the cache: the whole prompt normally, or prompt
-            # plus generated tokens when resuming a preempted request.
-            batch = [[r.token_ids[r.num_computed_tokens :] for r in requests][0]]
+            # Everything not already in the cache: the whole prompt normally, prompt plus
+            # generated tokens when resuming a preempted request, and only the tail after
+            # a prefix-cache hit. A prefill step always schedules exactly one request.
+            first = requests[0]
+            batch = [first.token_ids[first.num_computed_tokens :]]
         else:
             batch = [[r.last_token_id] for r in requests]
         starts = [r.num_computed_tokens for r in requests]

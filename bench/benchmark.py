@@ -22,10 +22,7 @@ import time
 
 from mini_vllm import LLMEngine, SamplingParams
 
-WORDS = (
-    "system model token cache block request latency batch kernel memory server engine "
-    "attention throughput schedule prefill decode paging stream"
-).split()
+WORDS = ["system", "model", "token", "cache", "block", "request", "latency", "batch", "kernel", "memory", "server", "engine", "attention", "throughput", "schedule", "prefill", "decode", "paging", "stream"]
 
 
 def make_prompt(rng: random.Random, num_words: int) -> str:
@@ -33,13 +30,13 @@ def make_prompt(rng: random.Random, num_words: int) -> str:
 
 
 def build_engine(args, **overrides) -> LLMEngine:
-    kwargs = dict(
-        device=args.device,
-        dtype=args.dtype,
-        num_blocks=args.num_blocks,
-        block_size=args.block_size,
-        max_num_seqs=args.max_num_seqs,
-    )
+    kwargs = {
+        "device": args.device,
+        "dtype": args.dtype,
+        "num_blocks": args.num_blocks,
+        "block_size": args.block_size,
+        "max_num_seqs": args.max_num_seqs,
+    }
     kwargs.update(overrides)
     return LLMEngine(args.model, **kwargs)
 
@@ -48,7 +45,7 @@ def percentile(values: list[float], pct: float) -> float:
     if not values:
         return float("nan")
     ordered = sorted(values)
-    index = min(len(ordered) - 1, int(round((pct / 100) * (len(ordered) - 1))))
+    index = min(len(ordered) - 1, round((pct / 100) * (len(ordered) - 1)))
     return ordered[index]
 
 

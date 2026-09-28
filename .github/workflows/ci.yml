@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      # Only the fast suite. The slow tests need ~1GB of weights, and downloading
+      # them on every push buys little: they are validated against real hardware in
+      # bench/kaggle.ipynb, where a GPU is available to make them meaningful.
+      - name: Test
+        run: pytest -m "not slow"

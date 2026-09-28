@@ -109,7 +109,7 @@ class RequestOutput:
     finish_reason: str | None = None
 
     @classmethod
-    def from_request(cls, req: Request, new_token_ids: list[int]) -> "RequestOutput":
+    def from_request(cls, req: Request, new_token_ids: list[int]) -> RequestOutput:
         reason = None
         if req.status.is_finished:
             reason = {
