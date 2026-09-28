@@ -69,14 +69,6 @@ class ModelConfig:
         )
 
 
-@dataclass(frozen=True)
-class CacheConfig:
-    """Phase 0: a single contiguous cache. Phase 2 replaces this with block config."""
-
-    max_seq_len: int = 2048
-    max_batch_size: int = 1
-
-
 def parse_dtype(spec: str | torch.dtype, device: torch.device) -> torch.dtype:
     """Resolve a dtype spec, defaulting per-device.
 

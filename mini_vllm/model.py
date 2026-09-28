@@ -77,9 +77,13 @@ class RotaryEmbedding(nn.Module):
     def forward(
         self, q: torch.Tensor, k: torch.Tensor, positions: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """q, k: (batch, seq, num_heads, head_dim); positions: (seq,)."""
-        cos = self.cos_cached[positions].to(q.dtype).unsqueeze(0).unsqueeze(2)
-        sin = self.sin_cached[positions].to(q.dtype).unsqueeze(0).unsqueeze(2)
+        """q, k: (N, seq, num_heads, head_dim); positions: (N, seq).
+
+        Positions are per row, not shared: in a decode step every sequence in the batch
+        sits at a different absolute position.
+        """
+        cos = self.cos_cached[positions].to(q.dtype).unsqueeze(2)
+        sin = self.sin_cached[positions].to(q.dtype).unsqueeze(2)
         return (q * cos) + (rotate_half(q) * sin), (k * cos) + (rotate_half(k) * sin)
 
 
@@ -120,30 +124,31 @@ class Attention(nn.Module):
         )
         self.o_proj = nn.Linear(self.num_heads * self.head_dim, config.hidden_size, bias=False)
 
-    def forward(
-        self, hidden: torch.Tensor, positions: torch.Tensor, kv_cache, md: AttnMetadata
-    ) -> torch.Tensor:
-        batch, seq, _ = hidden.shape
+    def forward(self, hidden: torch.Tensor, kv_cache, md: AttnMetadata) -> torch.Tensor:
+        n, seq, _ = hidden.shape
 
-        q = self.q_proj(hidden).view(batch, seq, self.num_heads, self.head_dim)
-        k = self.k_proj(hidden).view(batch, seq, self.num_kv_heads, self.head_dim)
-        v = self.v_proj(hidden).view(batch, seq, self.num_kv_heads, self.head_dim)
+        q = self.q_proj(hidden).view(n, seq, self.num_heads, self.head_dim)
+        k = self.k_proj(hidden).view(n, seq, self.num_kv_heads, self.head_dim)
+        v = self.v_proj(hidden).view(n, seq, self.num_kv_heads, self.head_dim)
 
-        q, k = self.rotary(q, k, positions)
-        k_all, v_all = kv_cache.append(self.layer_idx, k, v, md)
+        q, k = self.rotary(q, k, md.positions)
 
-        # sdpa wants (batch, heads, seq, head_dim).
+        # Write first, then read the whole context back. Doing it in that order means
+        # prefill and decode are the same code path: a prefill whose prefix is already
+        # cached simply finds more context waiting for it.
+        flat = (-1, self.num_kv_heads, self.head_dim)
+        kv_cache.write(self.layer_idx, k.reshape(flat), v.reshape(flat), md.slot_mapping)
+        k_all, v_all = kv_cache.gather(self.layer_idx, md.block_tables)
+
+        # sdpa wants (N, heads, seq, head_dim).
         q = q.transpose(1, 2)
         k_all = repeat_kv(k_all, self.num_queries_per_kv).transpose(1, 2)
         v_all = repeat_kv(v_all, self.num_queries_per_kv).transpose(1, 2)
 
-        if md.is_prefill and md.start_pos != 0:
-            raise NotImplementedError("chunked prefill needs an explicit mask")
-
         out = F.scaled_dot_product_attention(
-            q, k_all, v_all, is_causal=md.is_prefill, scale=self.scaling
+            q, k_all, v_all, attn_mask=md.attn_mask, scale=self.scaling
         )
-        out = out.transpose(1, 2).reshape(batch, seq, self.num_heads * self.head_dim)
+        out = out.transpose(1, 2).reshape(n, seq, self.num_heads * self.head_dim)
         return self.o_proj(out)
 
 
@@ -169,10 +174,8 @@ class Qwen2DecoderLayer(nn.Module):
         self.input_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
 
-    def forward(
-        self, hidden: torch.Tensor, positions: torch.Tensor, kv_cache, md: AttnMetadata
-    ) -> torch.Tensor:
-        hidden = hidden + self.self_attn(self.input_layernorm(hidden), positions, kv_cache, md)
+    def forward(self, hidden: torch.Tensor, kv_cache, md: AttnMetadata) -> torch.Tensor:
+        hidden = hidden + self.self_attn(self.input_layernorm(hidden), kv_cache, md)
         return hidden + self.mlp(self.post_attention_layernorm(hidden))
 
 
@@ -190,12 +193,10 @@ class Qwen2Model(nn.Module):
         )
         self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
 
-    def forward(
-        self, input_ids: torch.Tensor, positions: torch.Tensor, kv_cache, md: AttnMetadata
-    ) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, kv_cache, md: AttnMetadata) -> torch.Tensor:
         hidden = self.embed_tokens(input_ids)
         for layer in self.layers:
-            hidden = layer(hidden, positions, kv_cache, md)
+            hidden = layer(hidden, kv_cache, md)
         return self.norm(hidden)
 
 
@@ -211,19 +212,18 @@ class Qwen2ForCausalLM(nn.Module):
     def forward(
         self,
         input_ids: torch.Tensor,
-        positions: torch.Tensor,
         kv_cache,
         md: AttnMetadata,
         *,
         last_token_only: bool = False,
     ) -> torch.Tensor:
-        """(batch, seq) -> (batch, seq, vocab) logits.
+        """(N, seq) -> (N, seq, vocab) logits.
 
         ``last_token_only`` skips the lm_head projection for every position but the last.
         Generation only ever uses the final row, and for Qwen2.5-0.5B that projection is
         896x151936 per token. The parity test needs all rows, so it stays optional.
         """
-        hidden = self.model(input_ids, positions, kv_cache, md)
+        hidden = self.model(input_ids, kv_cache, md)
         if last_token_only:
             hidden = hidden[:, -1:, :]
         return self.lm_head(hidden)

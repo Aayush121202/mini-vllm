@@ -78,9 +78,16 @@ class Request:
     def is_prefill(self) -> bool:
         return self.num_computed_tokens < self.num_prompt_tokens
 
+    @property
+    def num_uncomputed_tokens(self) -> int:
+        """Tokens that still need a forward pass: the whole prompt for a fresh request,
+        one token during decode, everything again after a preemption."""
+        return self.num_tokens - self.num_computed_tokens
+
     def append_token(self, token_id: int) -> None:
+        """Note what this does NOT do: bump num_computed_tokens. A sampled token has no
+        KV in the cache until the next forward pass writes it."""
         self.output_token_ids.append(token_id)
-        self.num_computed_tokens += 1
 
     def check_stop(self) -> None:
         """Token-level stop conditions. String-level stops live in the detokenizer."""

@@ -23,6 +23,13 @@ NUM_GREEDY_TOKENS = 32
 
 # Same forward pass, same weights: only kernel-level rounding separates us from HF.
 LOGIT_TOLERANCE = 1e-4
+# Paged decode attends over a padded block table and masks the surplus columns. Those
+# columns contribute exactly zero weight mathematically, but they widen sdpa's softmax
+# reduction and so change its rounding. Measured on Qwen2.5-0.5B in fp32: 1.81e-5 at 32
+# padded columns, 2.29e-5 at 128 -- it tracks the padding, which is the signature of
+# reduction order rather than a bug. The behavioural oracle is the exact greedy match
+# below; this bound just has to be loose enough not to flag float32.
+PAGED_DECODE_TOLERANCE = 1e-4
 # Prefill and incremental decode take *different* BLAS paths (GEMM over the whole
 # sequence vs GEMV per token), so their accumulation orders differ. HF exhibits exactly
 # the same 3.03e-4 delta between its own two paths, so this bound measures float32, not
@@ -49,7 +56,29 @@ def tokenizer(model_path):
 
 @pytest.fixture(scope="module")
 def runner(model_path):
-    return ModelRunner(ModelConfig.from_json(model_path), device="cpu", dtype="float32")
+    return ModelRunner(
+        ModelConfig.from_json(model_path), device="cpu", dtype="float32", num_blocks=64
+    )
+
+
+def prefill(runner, token_ids: list[int]) -> torch.Tensor:
+    """One prefill through the real paged path: allocate blocks, then run."""
+    runner.reset()
+    table = runner.cache.allocator.allocate(_blocks_for(runner, len(token_ids)))
+    return runner.execute([token_ids], [0], [table], last_token_only=False)[0]
+
+
+def incremental(runner, token_ids: list[int]) -> torch.Tensor:
+    """Feed one token at a time, as a decode loop would."""
+    runner.reset()
+    table = runner.cache.allocator.allocate(_blocks_for(runner, len(token_ids)))
+    rows = [runner.execute([[t]], [i], [table])[0, -1] for i, t in enumerate(token_ids)]
+    return torch.stack(rows)
+
+
+def _blocks_for(runner, num_tokens: int) -> int:
+    size = runner.cache.block_size
+    return (num_tokens + size - 1) // size
 
 
 def hf_incremental_logits(hf_model, token_ids: list[int]) -> torch.Tensor:
@@ -69,8 +98,7 @@ def hf_incremental_logits(hf_model, token_ids: list[int]) -> torch.Tensor:
 def test_prefill_logits_match_hf(runner, hf_model, tokenizer, prompt):
     """Full-sequence logit parity on a single prefill."""
     token_ids = tokenizer(prompt).input_ids
-    runner.reset()
-    ours = runner.execute(token_ids, start_pos=0, last_token_only=False)
+    ours = prefill(runner, token_ids)
 
     with torch.inference_mode():
         theirs = hf_model(torch.tensor([token_ids])).logits.squeeze(0)
@@ -85,12 +113,11 @@ def test_decode_logits_match_hf_incremental(runner, hf_model, tokenizer, prompt)
     decode, token for token. Same shapes, same kernels, so any difference here is a real
     bug rather than rounding."""
     token_ids = tokenizer(prompt).input_ids
-    runner.reset()
-    ours = torch.stack([runner.execute([t], start_pos=i)[-1] for i, t in enumerate(token_ids)])
+    ours = incremental(runner, token_ids)
     theirs = hf_incremental_logits(hf_model, token_ids)
 
     max_diff = (ours - theirs).abs().max().item()
-    assert max_diff < 1e-6, f"max |Δlogit| vs HF incremental = {max_diff:.3e}"
+    assert max_diff < PAGED_DECODE_TOLERANCE, f"max |Δlogit| vs HF incremental = {max_diff:.3e}"
 
 
 def test_decode_logits_match_prefill(runner, tokenizer, prompt):
@@ -101,14 +128,8 @@ def test_decode_logits_match_prefill(runner, tokenizer, prompt):
     Bounded by float32 accumulation order, not by correctness -- see CACHE_PATH_TOLERANCE.
     """
     token_ids = tokenizer(prompt).input_ids
-
-    runner.reset()
-    prefill_logits = runner.execute(token_ids, start_pos=0, last_token_only=False)
-
-    runner.reset()
-    incremental_logits = torch.stack(
-        [runner.execute([t], start_pos=i)[-1] for i, t in enumerate(token_ids)]
-    )
+    prefill_logits = prefill(runner, token_ids)
+    incremental_logits = incremental(runner, token_ids)
 
     max_diff = (prefill_logits - incremental_logits).abs().max().item()
     assert max_diff < CACHE_PATH_TOLERANCE, f"prefill vs decode max |Δlogit| = {max_diff:.3e}"
@@ -138,7 +159,7 @@ def test_greedy_decode_matches_hf(model_path, hf_model, tokenizer, prompt):
             torch.tensor([token_ids]), generation_config=greedy
         )[0].tolist()[len(token_ids) :]
 
-    engine = LLMEngine(model_path, device="cpu", dtype="float32")
+    engine = LLMEngine(model_path, device="cpu", dtype="float32", num_blocks=64)
     engine.add_request(
         "parity",
         token_ids,
