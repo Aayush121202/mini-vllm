@@ -13,7 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 serving = ["fastapi", "uvicorn[standard]", "pydantic>=2"]
-dev = ["pytest>=8", "pytest-timeout", "ruff"]
+dev = ["pytest>=8", "pytest-timeout", "ruff", "httpx", "fastapi", "uvicorn[standard]"]
 
 [build-system]
 requires = ["setuptools>=68"]

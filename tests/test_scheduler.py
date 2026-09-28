@@ -129,3 +129,33 @@ def test_finishing_returns_blocks_to_the_pool():
     sched.finish(out.requests[0])
     assert sched.cache.allocator.num_used == used_before - 1
     assert not sched.has_unfinished()
+
+
+def test_second_request_with_the_same_prompt_skips_prefill_work():
+    sched = make_scheduler(num_blocks=16, block_size=4)
+    first = make_request("a", num_prompt_tokens=12)
+    sched.add(first)
+    out = sched.schedule()
+    complete_step(out)
+    sched.register_prefix(first)
+
+    second = Request("b", list(range(12)), SamplingParams())
+    sched.add(second)
+    sched.schedule()
+    # 12 prompt tokens = 3 full blocks, but one token must be left to recompute,
+    # so 2 blocks are reused and 8 tokens of prefill are skipped.
+    assert second.num_computed_tokens == 8
+    assert sched.num_cached_tokens == 8
+
+
+def test_prefix_cache_can_be_disabled():
+    sched = make_scheduler(num_blocks=16, block_size=4, enable_prefix_cache=False)
+    first = make_request("a", num_prompt_tokens=12)
+    sched.add(first)
+    complete_step(sched.schedule())
+    sched.register_prefix(first)
+
+    second = Request("b", list(range(12)), SamplingParams())
+    sched.add(second)
+    sched.schedule()
+    assert second.num_computed_tokens == 0

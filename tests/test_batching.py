@@ -88,3 +88,25 @@ def test_output_survives_preemption(model_path):
 
     assert cramped.scheduler.num_preemptions > 0, "test did not exercise preemption"
     assert actual == expected
+
+
+def test_prefix_cache_does_not_change_output(model_path):
+    """The whole point: reusing a cached prefix must be indistinguishable from
+    recomputing it."""
+    params = SamplingParams(temperature=0.0, max_tokens=16, stop_token_ids=[])
+    shared = "You are a helpful assistant. Answer in one short sentence. Question: "
+    prompts = [shared + q for q in ("Name a colour.", "Name a fruit.")]
+
+    off = LLMEngine(
+        model_path, device="cpu", dtype="float32", num_blocks=128, enable_prefix_cache=False
+    )
+    submit(off, prompts, params)
+    expected = drain(off)
+
+    on = LLMEngine(model_path, device="cpu", dtype="float32", num_blocks=128)
+    submit(on, prompts, params)
+    actual = drain(on)
+
+    assert on.scheduler.num_cached_tokens > 0, "test did not exercise the prefix cache"
+    assert off.scheduler.num_cached_tokens == 0
+    assert actual == expected

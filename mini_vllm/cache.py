@@ -12,6 +12,7 @@ arguments. That rule is what let this file be rewritten without touching model.p
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 
 import torch
@@ -65,6 +66,9 @@ class BlockAllocator:
 
     def incref(self, block_id: int) -> None:
         self._refcount[block_id] = self._refcount.get(block_id, 0) + 1
+
+    def refcount(self, block_id: int) -> int:
+        return self._refcount.get(block_id, 0)
 
     def free(self, block_ids: list[int]) -> None:
         """Drop one reference per id, returning blocks that hit zero to the free list."""
@@ -178,3 +182,84 @@ def build_attn_metadata(
         attn_mask=attn_mask,
         num_new_tokens=num_new_tokens,
     )
+
+
+class PrefixCache:
+    """Reuse KV blocks across requests that start with the same tokens.
+
+    Two requests sharing a system prompt compute it twice for no reason. Hashing each
+    *full* block of tokens -- chained, so a hash identifies a position as well as its
+    contents -- makes that prefix addressable, and the block refcounts already in the
+    allocator make it shareable.
+
+    Only full blocks are cached: a partial block would be ambiguous, since its later
+    slots are still unwritten. Blocks are registered after a prefill, so the win shows up
+    on the *second* request with a given prefix.
+    """
+
+    def __init__(self, allocator: BlockAllocator, block_size: int) -> None:
+        self.allocator = allocator
+        self.block_size = block_size
+        self.blocks: dict[int, int] = {}  # block hash -> physical block id
+        self.order: OrderedDict[int, None] = OrderedDict()  # LRU over hashes
+        self.num_hits = 0
+        self.num_misses = 0
+
+    def block_hashes(self, token_ids: list[int]) -> list[int]:
+        """Chained hash per full block: position matters, not just content."""
+        hashes, parent = [], 0
+        for start in range(0, len(token_ids) - self.block_size + 1, self.block_size):
+            parent = hash((parent, tuple(token_ids[start : start + self.block_size])))
+            hashes.append(parent)
+        return hashes
+
+    def match(self, token_ids: list[int]) -> list[int]:
+        """Longest cached prefix, as block ids with a reference taken on each.
+
+        The caller owns those references and must free them if it then fails to allocate
+        the rest of the sequence.
+        """
+        matched = []
+        for h in self.block_hashes(token_ids):
+            block_id = self.blocks.get(h)
+            if block_id is None:
+                break
+            self.allocator.incref(block_id)
+            self.order.move_to_end(h)
+            matched.append(block_id)
+        if matched:
+            self.num_hits += 1
+        else:
+            self.num_misses += 1
+        return matched
+
+    def register(self, token_ids: list[int], block_table: list[int]) -> None:
+        """Publish the full blocks of a freshly computed prefix."""
+        for i, h in enumerate(self.block_hashes(token_ids)):
+            if i >= len(block_table):
+                break
+            if h in self.blocks:
+                self.order.move_to_end(h)
+                continue
+            self.blocks[h] = block_table[i]
+            self.allocator.incref(block_table[i])  # the cache itself holds a reference
+            self.order[h] = None
+
+    def evict(self, num_blocks: int) -> int:
+        """Release up to ``num_blocks`` cached blocks, least recently used first.
+
+        Blocks still referenced by a live request are skipped -- the refcount is the
+        source of truth, so eviction can never pull memory out from under a sequence.
+        """
+        freed = 0
+        for h in list(self.order):
+            if freed >= num_blocks:
+                break
+            block_id = self.blocks[h]
+            if self.allocator.refcount(block_id) > 1:
+                continue
+            del self.blocks[h]
+            del self.order[h]
+            self.allocator.free([block_id])
+            freed += 1
+        return freed

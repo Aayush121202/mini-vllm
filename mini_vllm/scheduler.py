@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 
-from mini_vllm.cache import PagedKVCache
+from mini_vllm.cache import PagedKVCache, PrefixCache
 from mini_vllm.request import Request, RequestStatus
 
 
@@ -30,11 +30,19 @@ class SchedulerOutput:
 
 class Scheduler:
     def __init__(
-        self, cache: PagedKVCache, max_num_seqs: int = 32, static_batching: bool = False
+        self,
+        cache: PagedKVCache,
+        max_num_seqs: int = 32,
+        static_batching: bool = False,
+        enable_prefix_cache: bool = True,
     ) -> None:
         self.cache = cache
         self.block_size = cache.block_size
         self.max_num_seqs = max_num_seqs
+        self.prefix_cache = (
+            PrefixCache(cache.allocator, cache.block_size) if enable_prefix_cache else None
+        )
+        self.num_cached_tokens = 0
         # Ablation switch: when true, no new request is admitted until the running batch
         # has fully drained. This is the "before" picture in the benchmark.
         self.static_batching = static_batching
@@ -61,7 +69,17 @@ class Scheduler:
         if request in self.running:
             self.running.remove(request)
         blocks = self.block_tables.pop(request.request_id, [])
+        # Blocks published to the prefix cache carry an extra reference, so freeing here
+        # returns only the request's own claim and leaves the cached prefix intact.
         self.cache.allocator.free(blocks)
+
+    def register_prefix(self, request: Request) -> None:
+        """Publish a completed prefill so the next request with this prefix reuses it."""
+        if self.prefix_cache is None:
+            return
+        table = self.block_tables.get(request.request_id)
+        if table:
+            self.prefix_cache.register(request.token_ids[: request.num_computed_tokens], table)
 
     def schedule(self) -> SchedulerOutput:
         admitted = self._try_admit()
@@ -84,15 +102,41 @@ class Scheduler:
             return None
 
         req = self.waiting[0]
-        needed = self._blocks_for(req.num_tokens)
-        if not self.cache.allocator.can_allocate(needed):
+        matched = self._match_prefix(req)
+        needed = self._blocks_for(req.num_tokens) - len(matched)
+        if not self._reserve(needed):
+            self.cache.allocator.free(matched)  # give the prefix references back
             return None
 
         self.waiting.popleft()
-        self.block_tables[req.request_id] = self.cache.allocator.allocate(needed)
+        self.block_tables[req.request_id] = matched + self.cache.allocator.allocate(needed)
+        req.num_computed_tokens = len(matched) * self.block_size
+        self.num_cached_tokens += req.num_computed_tokens
         req.status = RequestStatus.RUNNING
         self.running.append(req)
         return req
+
+    def _match_prefix(self, request: Request) -> list[int]:
+        if self.prefix_cache is None:
+            return []
+        matched = self.prefix_cache.match(request.token_ids)
+        # Always leave at least one token to recompute: a forward pass over zero tokens
+        # produces no logits, so there would be nothing to sample from.
+        limit = (request.num_tokens - 1) // self.block_size
+        if len(matched) > limit:
+            self.cache.allocator.free(matched[limit:])
+            matched = matched[:limit]
+        return matched
+
+    def _reserve(self, num_blocks: int) -> bool:
+        """Make room for ``num_blocks``, evicting unreferenced cached prefixes first."""
+        if self.cache.allocator.can_allocate(num_blocks):
+            return True
+        if self.prefix_cache is None:
+            return False
+        shortfall = num_blocks - self.cache.allocator.num_free
+        self.prefix_cache.evict(shortfall)
+        return self.cache.allocator.can_allocate(num_blocks)
 
     def _make_room(self) -> list[Request]:
         """Grow every running request's block table by one token's worth of space.
@@ -121,7 +165,7 @@ class Scheduler:
         if needed <= len(table):
             return True
         extra = needed - len(table)
-        if not self.cache.allocator.can_allocate(extra):
+        if not self._reserve(extra):
             return False
         table.extend(self.cache.allocator.allocate(extra))
         return True

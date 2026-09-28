@@ -119,6 +119,7 @@ class LLMEngine:
         block_size: int = DEFAULT_BLOCK_SIZE,
         max_num_seqs: int = 32,
         static_batching: bool = False,
+        enable_prefix_cache: bool = True,
     ) -> None:
         path = resolve_model_path(model_path)
         self.config = ModelConfig.from_json(path)
@@ -126,7 +127,10 @@ class LLMEngine:
             self.config, device=device, dtype=dtype, num_blocks=num_blocks, block_size=block_size
         )
         self.scheduler = Scheduler(
-            self.runner.cache, max_num_seqs=max_num_seqs, static_batching=static_batching
+            self.runner.cache,
+            max_num_seqs=max_num_seqs,
+            static_batching=static_batching,
+            enable_prefix_cache=enable_prefix_cache,
         )
         self.sampler = Sampler()
         self._generators: dict[str, torch.Generator] = {}
@@ -171,6 +175,8 @@ class LLMEngine:
         logits = self.runner.execute(batch, starts, tables)[:, -1, :]
         for request, tokens in zip(requests, batch):
             request.num_computed_tokens += len(tokens)
+        if scheduled.is_prefill:
+            self.scheduler.register_prefix(requests[0])
 
         sampled = self.sampler(
             logits,
@@ -203,6 +209,7 @@ class LLMEngine:
             "blocks_used": self.runner.cache.allocator.num_used,
             "blocks_total": self.runner.cache.num_blocks,
             "preemptions": self.scheduler.num_preemptions,
+            "cached_prompt_tokens": self.scheduler.num_cached_tokens,
         }
 
     # -- convenience ---------------------------------------------------------------

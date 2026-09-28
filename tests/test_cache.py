@@ -149,3 +149,86 @@ def test_shorter_block_tables_are_padded():
     assert md.block_tables.shape == (2, 2)
     assert md.block_tables[0].tolist() == [1, 0]  # padded with block 0, masked out
     assert not bool(md.attn_mask[0, 0, 0, 4:].any())
+
+
+# -- prefix cache ---------------------------------------------------------------
+
+
+def make_prefix_cache(num_blocks: int = 8, block_size: int = 4):
+    from mini_vllm.cache import PrefixCache
+
+    alloc = BlockAllocator(num_blocks)
+    return alloc, PrefixCache(alloc, block_size)
+
+
+def test_only_full_blocks_are_hashed():
+    _, cache = make_prefix_cache()
+    assert len(cache.block_hashes(list(range(4)))) == 1
+    assert len(cache.block_hashes(list(range(7)))) == 1  # trailing 3 tokens are partial
+    assert len(cache.block_hashes(list(range(8)))) == 2
+    assert cache.block_hashes(list(range(3))) == []
+
+
+def test_hash_chain_makes_position_significant():
+    """The same tokens in a different position must not collide: a prefix cache entry
+    is only valid if everything before it matches too."""
+    _, cache = make_prefix_cache()
+    first = cache.block_hashes([1, 2, 3, 4, 5, 6, 7, 8])
+    shifted = cache.block_hashes([9, 9, 9, 9, 1, 2, 3, 4])
+    assert first[0] != shifted[1]
+
+
+def test_register_then_match_reuses_blocks():
+    alloc, cache = make_prefix_cache()
+    tokens = list(range(8))
+    table = alloc.allocate(2)
+    cache.register(tokens, table)
+
+    matched = cache.match(tokens + [99, 100])
+    assert matched == table
+    assert cache.num_hits == 1
+
+
+def test_match_stops_at_the_first_divergence():
+    alloc, cache = make_prefix_cache()
+    table = alloc.allocate(2)
+    cache.register([0, 1, 2, 3, 4, 5, 6, 7], table)
+
+    matched = cache.match([0, 1, 2, 3, 40, 50, 60, 70])
+    assert matched == table[:1]  # first block shared, second differs
+
+
+def test_unmatched_prompt_is_a_miss():
+    alloc, cache = make_prefix_cache()
+    cache.register([0, 1, 2, 3], alloc.allocate(1))
+    assert cache.match([9, 9, 9, 9]) == []
+    assert cache.num_misses == 1
+
+
+def test_eviction_skips_blocks_a_request_still_holds():
+    """Refcounts are the source of truth: eviction can never pull memory out from under
+    a live sequence."""
+    alloc, cache = make_prefix_cache(num_blocks=2)
+    held = alloc.allocate(1)  # a "request" holds this block
+    cache.register([0, 1, 2, 3], held)
+    assert alloc.refcount(held[0]) == 2  # request + cache
+
+    assert cache.evict(1) == 0  # still referenced
+    alloc.free(held)  # request finishes; only the cache holds it now
+    assert cache.evict(1) == 1
+    assert alloc.num_free == 2
+
+
+def test_eviction_is_least_recently_used():
+    alloc, cache = make_prefix_cache(num_blocks=4)
+    a, b = alloc.allocate(1), alloc.allocate(1)
+    cache.register([0, 1, 2, 3], a)
+    cache.register([4, 5, 6, 7], b)
+    alloc.free(a)
+    alloc.free(b)
+
+    cache.match([0, 1, 2, 3])  # touch 'a', making 'b' the least recent
+    alloc.free(a)
+    cache.evict(1)
+    assert cache.match([4, 5, 6, 7]) == []  # 'b' went
+    assert cache.match([0, 1, 2, 3]) == a  # 'a' survived
