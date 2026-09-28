@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from mini_vllm.cache.contiguous import ContiguousKVCache
-from mini_vllm.cache.interface import AttnMetadata
+from mini_vllm.cache import ContiguousKVCache
+from mini_vllm.cache import AttnMetadata
 
 
 def make_cache(max_seq_len: int = 16) -> ContiguousKVCache:

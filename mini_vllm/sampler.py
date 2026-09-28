@@ -13,7 +13,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from mini_vllm.engine.sequence import SamplingParams
+from mini_vllm.request import SamplingParams
 
 
 def apply_top_k(logits: torch.Tensor, top_k: int) -> torch.Tensor:

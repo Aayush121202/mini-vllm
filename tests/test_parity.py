@@ -13,9 +13,9 @@ import pytest
 import torch
 
 from mini_vllm.config import ModelConfig
-from mini_vllm.engine.llm_engine import LLMEngine
-from mini_vllm.engine.sequence import SamplingParams
-from mini_vllm.runner.model_runner import ModelRunner
+from mini_vllm.engine import LLMEngine
+from mini_vllm.request import SamplingParams
+from mini_vllm.engine import ModelRunner
 
 pytestmark = pytest.mark.slow
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from mini_vllm.engine.sequence import RequestOutput, SamplingParams, Sequence, SequenceStatus
-from mini_vllm.layers.sampler import Sampler, apply_top_k, apply_top_p
+from mini_vllm.request import RequestOutput, SamplingParams, Request, RequestStatus
+from mini_vllm.sampler import Sampler, apply_top_k, apply_top_p
 
 
 def test_greedy_is_argmax():
@@ -51,7 +51,7 @@ def test_invalid_sampling_params_rejected(kwargs):
 
 
 def test_sequence_stops_on_length():
-    seq = Sequence("r", [1, 2, 3], SamplingParams(max_tokens=2))
+    seq = Request("r", [1, 2, 3], SamplingParams(max_tokens=2))
     assert seq.is_prefill
     seq.num_computed_tokens = 3
     seq.append_token(4)
@@ -59,12 +59,12 @@ def test_sequence_stops_on_length():
     assert not seq.status.is_finished
     seq.append_token(5)
     seq.check_stop()
-    assert seq.status is SequenceStatus.FINISHED_LENGTH
-    assert RequestOutput.from_seq(seq, [5]).finish_reason == "length"
+    assert seq.status is RequestStatus.FINISHED_LENGTH
+    assert RequestOutput.from_request(seq, [5]).finish_reason == "length"
 
 
 def test_sequence_stops_on_stop_token():
-    seq = Sequence("r", [1], SamplingParams(max_tokens=10, stop_token_ids=[7]))
+    seq = Request("r", [1], SamplingParams(max_tokens=10, stop_token_ids=[7]))
     seq.append_token(7)
     seq.check_stop()
-    assert seq.status is SequenceStatus.FINISHED_STOPPED
+    assert seq.status is RequestStatus.FINISHED_STOPPED

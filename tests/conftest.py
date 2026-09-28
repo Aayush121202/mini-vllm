@@ -10,7 +10,7 @@ TEST_MODEL = os.environ.get("MINI_VLLM_TEST_MODEL", "Qwen/Qwen2.5-0.5B-Instruct"
 @pytest.fixture(scope="session")
 def model_path():
     """Local path to the test checkpoint, downloading it once if needed."""
-    from mini_vllm.models.loader import resolve_model_path
+    from mini_vllm.model import resolve_model_path
 
     try:
         return resolve_model_path(TEST_MODEL)

@@ -6,10 +6,10 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 
 
-class SequenceStatus(Enum):
+class RequestStatus(Enum):
     WAITING = auto()
     RUNNING = auto()
-    # Phase 3: SWAPPED / PREEMPTED land here.
+    PREEMPTED = auto()
     FINISHED_STOPPED = auto()
     FINISHED_LENGTH = auto()
     FINISHED_ABORTED = auto()
@@ -17,9 +17,9 @@ class SequenceStatus(Enum):
     @property
     def is_finished(self) -> bool:
         return self in (
-            SequenceStatus.FINISHED_STOPPED,
-            SequenceStatus.FINISHED_LENGTH,
-            SequenceStatus.FINISHED_ABORTED,
+            RequestStatus.FINISHED_STOPPED,
+            RequestStatus.FINISHED_LENGTH,
+            RequestStatus.FINISHED_ABORTED,
         )
 
 
@@ -48,14 +48,14 @@ class SamplingParams:
 
 
 @dataclass
-class Sequence:
+class Request:
     request_id: str
     prompt_token_ids: list[int]
     sampling_params: SamplingParams
     output_token_ids: list[int] = field(default_factory=list)
-    status: SequenceStatus = SequenceStatus.WAITING
-    # Number of tokens whose KV is already in the cache. Phase 3 (chunked prefill)
-    # advances this by less than the full prompt length.
+    status: RequestStatus = RequestStatus.WAITING
+    # Number of tokens whose KV is already in the cache. Prefix cache hits advance this
+    # before any forward pass runs.
     num_computed_tokens: int = 0
 
     @property
@@ -83,11 +83,11 @@ class Sequence:
         self.num_computed_tokens += 1
 
     def check_stop(self) -> None:
-        """Token-level stop conditions. String-level stops live in the detokenizer (Phase 1)."""
+        """Token-level stop conditions. String-level stops live in the detokenizer."""
         if self.output_token_ids and self.last_token_id in self.sampling_params.stop_token_ids:
-            self.status = SequenceStatus.FINISHED_STOPPED
+            self.status = RequestStatus.FINISHED_STOPPED
         elif len(self.output_token_ids) >= self.sampling_params.max_tokens:
-            self.status = SequenceStatus.FINISHED_LENGTH
+            self.status = RequestStatus.FINISHED_LENGTH
 
 
 @dataclass
@@ -102,19 +102,19 @@ class RequestOutput:
     finish_reason: str | None = None
 
     @classmethod
-    def from_seq(cls, seq: Sequence, new_token_ids: list[int]) -> "RequestOutput":
+    def from_request(cls, req: Request, new_token_ids: list[int]) -> "RequestOutput":
         reason = None
-        if seq.status.is_finished:
+        if req.status.is_finished:
             reason = {
-                SequenceStatus.FINISHED_STOPPED: "stop",
-                SequenceStatus.FINISHED_LENGTH: "length",
-                SequenceStatus.FINISHED_ABORTED: "abort",
-            }[seq.status]
+                RequestStatus.FINISHED_STOPPED: "stop",
+                RequestStatus.FINISHED_LENGTH: "length",
+                RequestStatus.FINISHED_ABORTED: "abort",
+            }[req.status]
         return cls(
-            request_id=seq.request_id,
-            prompt_token_ids=list(seq.prompt_token_ids),
-            token_ids=list(seq.output_token_ids),
+            request_id=req.request_id,
+            prompt_token_ids=list(req.prompt_token_ids),
+            token_ids=list(req.output_token_ids),
             new_token_ids=new_token_ids,
-            finished=seq.status.is_finished,
+            finished=req.status.is_finished,
             finish_reason=reason,
         )

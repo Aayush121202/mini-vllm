@@ -1,19 +1,38 @@
-"""Phase 0 KV cache: one dense ``[batch, max_seq_len, ...]`` tensor per layer.
+"""KV cache.
 
-Deliberately naive. It exists to be (a) the correctness oracle for the paged cache and
-(b) the measurement that motivates it: a sequence of length L in a cache sized for
-max_seq_len wastes ``(max_seq_len - L) / max_seq_len`` of its allocation. Run
-``memory_report()`` before and after Phase 2 and put the delta in the README.
+Attention never allocates cache memory -- it receives a cache object and metadata as
+arguments. That single rule is what lets this file be rewritten (contiguous -> paged)
+without touching model.py.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 
-from mini_vllm.cache.interface import AttnMetadata
+
+@dataclass
+class AttnMetadata:
+    """Built once per engine step and threaded down to every layer."""
+
+    is_prefill: bool
+    start_pos: int  # position of the first new token within the sequence
+    num_new_tokens: int
+
+    @property
+    def end_pos(self) -> int:
+        return self.start_pos + self.num_new_tokens
 
 
 class ContiguousKVCache:
+    """One dense ``[batch, max_seq_len, ...]`` tensor per layer.
+
+    Deliberately naive, and on its way out: it wastes
+    ``(max_seq_len - actual_len) / max_seq_len`` of its allocation per sequence, which is
+    the measurement that motivates the paged cache.
+    """
+
     def __init__(
         self,
         num_layers: int,
@@ -47,8 +66,8 @@ class ContiguousKVCache:
         )
 
     def reset(self) -> None:
-        # Zeroing is not required for correctness (reads are bounded by end_pos) but
-        # makes debugging far less confusing.
+        # Not required for correctness (reads are bounded by end_pos) but makes
+        # debugging far less confusing.
         self.k_cache.zero_()
         self.v_cache.zero_()
 
