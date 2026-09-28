@@ -196,8 +196,8 @@ attention path instead of depending on FlashAttention-2, which requires Ampere o
 ## Tests
 
 ```bash
-pytest            # 49 fast tests: allocator, scheduler, sampler, detokenizer
-pytest -m slow    # 22 more against real weights (~1GB on first run)
+pytest            # 50 fast tests: allocator, scheduler, sampler, detokenizer
+pytest -m slow    # 28 more against real weights (~1GB on first run)
 ```
 
 The ones that matter:

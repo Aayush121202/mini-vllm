@@ -21,7 +21,7 @@ jobs:
       - name: Lint
         run: ruff check .
 
-      # Only the fast suite. The slow tests need ~1GB of weights, and downloading
+      # Only the fast suite (50 tests). The slow ones need ~1GB of weights, and
       # them on every push buys little: they are validated against real hardware in
       # bench/kaggle.ipynb, where a GPU is available to make them meaningful.
       - name: Test
