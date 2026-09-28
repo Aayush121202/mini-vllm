@@ -44,41 +44,89 @@ swapped from contiguous to paged without touching a line of `model.py`.
 
 ## Results
 
-Qwen2.5-0.5B-Instruct, fp16, Apple M5 (MPS). Reproduce with `bench/benchmark.py`.
+Qwen2.5-0.5B-Instruct, fp16, Apple M5 (MPS), 16 concurrency slots. Every figure is a median
+of 3 warmed runs — reproduce with `bench/benchmark.py`.
 
-**Continuous vs static batching** — 32 requests × 32 tokens:
+### Latency under arrival load
 
-| scheduling | tokens/s | wall time | forward passes |
-|---|---:|---:|---:|
-| continuous | 307.2 | 3.3s | 63 |
-| static | 46.4 | 22.1s | 1024 |
+40 requests, Poisson arrivals at 8/s. This is where continuous batching earns its keep:
 
-**6.6× throughput**, and it scales with concurrency (2.4× at 12 concurrent requests). The
-mechanism is visible in the last column: static batching spends 1024 forward passes to do
-what continuous batching does in 63, because it decodes one sequence at a time.
+| scheduling | TTFT p50 | TTFT p99 | TPOT p50 | tokens/s |
+|---|---:|---:|---:|---:|
+| **continuous** | **25 ms** | **49 ms** | 28.0 ms | 208.9 |
+| static | 491 ms | 1072 ms | 25.4 ms | 184.9 |
 
-**Latency under load** — 24 requests, Poisson arrivals at 6/s:
+**19.8× better median time-to-first-token**, and 22× better at p99. A request that arrives
+mid-flight joins the next forward pass instead of waiting for the running batch to drain.
 
-| metric | p50 | p99 |
+The one place static wins is TPOT — 25.4 ms against 28.0 ms — and the reason is real:
+continuous batching interleaves new prefills into the decode stream, so tokens arrive
+slightly less evenly. Without chunked prefill (see below) that is the cost of admitting
+eagerly.
+
+### Offline throughput
+
+64 requests, variable output lengths (17–64 tokens, mean 39):
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="bench/results/throughput-dark.png">
+  <img alt="Throughput against concurrency limit, continuous vs static batching"
+       src="bench/results/throughput-light.png">
+</picture>
+
+| engine | tokens/s | forward passes |
 |---|---:|---:|
-| TTFT | 107 ms | 1816 ms |
-| TPOT | 55.4 ms | 63.7 ms |
+| mini-vllm, continuous | 400.2 | 245 |
+| mini-vllm, static | 336.6 | 310 |
+| HuggingFace `generate()`, batched | 381.8 | 250 |
 
-**Prefix caching** — 8 requests sharing a 317-token system prompt:
+**1.19× over static batching** — the mechanism is the last column: a static batch runs until
+its longest member finishes, so it burns 65 extra forward passes on slots that finished
+early and cannot be reclaimed.
+
+**1.05× against HuggingFace**, which is to say a tie. That is the honest headline: on raw
+offline throughput this engine matches the library everyone already has, while additionally
+doing paged memory, mid-flight admission, and prefix reuse. HF is capped at the same
+concurrency here, because batch size is a memory budget and handing one side a bigger one
+measures nothing.
+
+The curve shows where the win lives. At one slot there is no batching either way; at 64
+slots every request fits in a single wave and static batching *is* continuous batching. The
+gap only exists in between, when requests outnumber the slots — which is what a real server
+looks like.
+
+### Prefix caching
+
+8 requests sharing a 317-token system prompt:
 
 | prefix cache | cold TTFT (1st) | warm TTFT (rest) | prompt tokens reused |
 |---|---:|---:|---:|
-| on | 92 ms | 28 ms | 2,128 |
+| on | 103 ms | **27 ms** | 2,128 |
 | off | 59 ms | 45 ms | 0 |
 
-**1.63× faster TTFT** once warm. The first request is *slower* with caching on — it pays to
-populate the cache and benefits from nothing. Averaging it in hides the entire effect, so
-it's reported separately.
+**1.66× faster TTFT** once warm. The first request is *slower* with caching on — it pays to
+populate the cache and benefits from nothing — so it is reported separately. Averaged in, it
+drags a real 1.66× down to 1.00×.
 
-One number that is deliberately **not** claimed: paged attention is not faster per step than
-a contiguous cache. Gathering blocks in pure PyTorch copies K/V every step, where a fused
-kernel would read them in place. Paging buys **concurrency per gigabyte**, not raw speed,
-and those are different claims.
+### What is not claimed
+
+Paged attention is **not** faster per step than a contiguous cache. Gathering blocks in pure
+PyTorch copies K/V every step where a fused kernel would read them in place; the tie with HF
+is where that cost shows up. Paging buys **concurrency per gigabyte**, not raw speed.
+
+### A correction
+
+An earlier version of this README claimed 6.6×, measured against an ablation labelled
+"static batching" that never batched: admission was blocked whenever *anything* was running,
+and since a prefill step also samples a token, the wave sealed after the first request and
+degenerated into running one request at a time. That is a strawman, not a baseline. Static
+batching now fills a wave up to the concurrency limit, seals it on first decode, and drains
+before admitting more — what HF actually does — and the honest offline number is 1.19×.
+
+Two other measurement bugs are worth naming, since both silently manufacture results:
+throughput moved close to 2× run-to-run until the benchmarks warmed up first, and TTFT p50
+moved more than 10× between a cold and a warm run. Everything above is a median of 3 warmed
+trials, and the harness prints the spread across trials so the variance is visible.
 
 ## Quick start
 

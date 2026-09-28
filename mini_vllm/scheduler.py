@@ -43,9 +43,15 @@ class Scheduler:
             PrefixCache(cache.allocator, cache.block_size) if enable_prefix_cache else None
         )
         self.num_cached_tokens = 0
-        # Ablation switch: when true, no new request is admitted until the running batch
-        # has fully drained. This is the "before" picture in the benchmark.
+        # Ablation switch. Static batching fills a wave up to max_num_seqs, locks it
+        # once decoding starts, and admits nothing more until every member has
+        # finished -- which is what HuggingFace generate() does with a padded batch.
+        # (An earlier version blocked admission as soon as anything was running at all.
+        # Because a prefill step samples a token, that locked the wave after the first
+        # request and degenerated into running one request at a time -- a strawman, not
+        # a baseline.)
         self.static_batching = static_batching
+        self._wave_open = True
 
         self.waiting: deque[Request] = deque()
         self.running: list[Request] = []
@@ -82,6 +88,9 @@ class Scheduler:
             self.prefix_cache.register(request.token_ids[: request.num_computed_tokens], table)
 
     def schedule(self) -> SchedulerOutput:
+        if self.static_batching and not self.running:
+            self._wave_open = True  # previous wave drained; a new one may form
+
         admitted = self._try_admit()
         if admitted is not None:
             return SchedulerOutput([admitted], is_prefill=True)
@@ -89,6 +98,9 @@ class Scheduler:
         preempted = self._make_room()
         if not self.running:
             return SchedulerOutput([], is_prefill=False, preempted=preempted)
+        # First decode of the wave seals it: under static batching nothing joins from
+        # here until the whole batch has finished.
+        self._wave_open = False
         return SchedulerOutput(list(self.running), is_prefill=False, preempted=preempted)
 
     # -- internals -----------------------------------------------------------------
@@ -96,7 +108,7 @@ class Scheduler:
     def _try_admit(self) -> Request | None:
         if not self.waiting:
             return None
-        if self.static_batching and self.running:
+        if self.static_batching and not self._wave_open:
             return None
         if len(self.running) >= self.max_num_seqs:
             return None

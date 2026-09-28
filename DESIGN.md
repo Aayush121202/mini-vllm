@@ -86,6 +86,20 @@ would fail it.
   are no new tokens to forward, so no logits to sample from. Always leave at least one token
   to recompute.
 
+- **An ablation can be a strawman without anyone noticing.** The `static_batching` switch
+  originally blocked admission whenever anything was running. Because a prefill step also
+  samples a token, the wave sealed after the first request and the "baseline" degenerated
+  into running one request at a time — `tokens_per_step = 1.0`. It produced a headline 6.6×
+  that meant nothing. The tell was in the output the whole time: a batching baseline whose
+  batch size is 1. Real static batching fills a wave to the concurrency limit, seals it on
+  first decode, and drains before admitting more.
+
+- **An unwarmed benchmark invents results.** Throughput varied close to 2× between
+  back-to-back runs, and TTFT p50 moved more than 10× between a cold and a warm run — enough
+  to report a 23.7× improvement that was really 2×, and to make continuous batching look
+  *worse* at p99 than static when warmed runs show it 22× better. Warm up, run several
+  trials, take the median, and print the spread so a reader can see how much to trust it.
+
 - **Averaging hides prefix caching.** The first request populates the cache and benefits from
   nothing, so it is *slower* with caching on. Mixed into a mean over 8 requests, a real 1.63×
   win reads as 1.00×. Report cold and warm separately.

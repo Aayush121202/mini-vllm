@@ -68,15 +68,38 @@ def test_new_request_joins_mid_generation():
     assert [r.request_id for r in sched.schedule().requests] == ["a", "b"]
 
 
-def test_static_batching_makes_arrivals_wait():
-    sched = make_scheduler(static_batching=True)
-    sched.add(make_request("a", max_tokens=50))
-    complete_step(sched.schedule())
-    sched.add(make_request("b"))
+def test_static_batching_fills_a_wave_then_locks_it():
+    """Static batching should batch -- fill up to max_num_seqs, then admit nothing more
+    until the wave drains. An ablation that runs one request at a time is a strawman,
+    not a baseline."""
+    sched = make_scheduler(num_blocks=16, static_batching=True)
+    for name in ("a", "b"):
+        sched.add(make_request(name, max_tokens=50))
 
+    complete_step(sched.schedule())  # prefill 'a'
     out = sched.schedule()
-    assert not out.is_prefill  # 'b' is not admitted while 'a' runs
-    assert [r.request_id for r in out.requests] == ["a"]
+    assert out.is_prefill and out.requests[0].request_id == "b"  # wave still forming
+    complete_step(out)
+
+    out = sched.schedule()  # first decode seals the wave
+    assert [r.request_id for r in out.requests] == ["a", "b"]
+    complete_step(out)
+
+    sched.add(make_request("c"))
+    out = sched.schedule()
+    assert not out.is_prefill  # 'c' waits for the whole wave to finish
+    assert [r.request_id for r in out.requests] == ["a", "b"]
+
+
+def test_static_batching_admits_the_next_wave_once_drained():
+    sched = make_scheduler(num_blocks=16, static_batching=True)
+    sched.add(make_request("a", max_tokens=1))
+    complete_step(sched.schedule())
+    sched.finish(sched.running[0])
+    assert not sched.running
+
+    sched.add(make_request("b"))
+    assert sched.schedule().is_prefill
 
 
 def test_max_num_seqs_caps_the_batch():

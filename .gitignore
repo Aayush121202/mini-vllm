@@ -10,4 +10,3 @@ build/
 models/
 *.safetensors
 .DS_Store
-bench/results/
