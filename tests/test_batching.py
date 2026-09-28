@@ -12,6 +12,15 @@ from mini_vllm import LLMEngine, SamplingParams
 
 pytestmark = pytest.mark.slow
 
+# Longer than two 16-token blocks (38 tokens), so the shared region spans whole
+# blocks regardless of what follows it. A prefix shorter than block_size would make
+# these tests pass or fail on whether the first question token happened to match.
+SHARED_PREFIX = (
+    "You are a helpful assistant. Answer every question in exactly one short sentence, "
+    "using plain language, with no preamble, no lists, and no restatement of the "
+    "question itself. Question: "
+)
+
 PROMPTS = [
     "The capital of France is",
     "Water boils at",
@@ -94,8 +103,7 @@ def test_prefix_cache_does_not_change_output(model_path):
     """The whole point: reusing a cached prefix must be indistinguishable from
     recomputing it."""
     params = SamplingParams(temperature=0.0, max_tokens=16, stop_token_ids=[])
-    shared = "You are a helpful assistant. Answer in one short sentence. Question: "
-    prompts = [shared + q for q in ("Name a colour.", "Name a fruit.")]
+    prompts = [SHARED_PREFIX + q for q in ("Name a colour.", "Name a fruit.")]
 
     off = LLMEngine(
         model_path, device="cpu", dtype="float32", num_blocks=128, enable_prefix_cache=False

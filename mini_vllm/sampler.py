@@ -4,8 +4,9 @@ Every request in a batch can carry different temperature, top_k and top_p, so th
 processing is vectorised over rows rather than looped: one sort, per-row thresholds.
 Looping in Python works and then quietly dominates step time once the batch is large.
 
-Hard rule: no ``.item()`` or ``.cpu()`` in here. Each one is a device sync that
-serialises the pipeline.
+Hard rule: nothing in here reads a tensor value on the host. That means no ``.item()``,
+no ``.cpu()``, and no ``bool(tensor)`` -- the last one is easy to write by accident and
+syncs just as hard. Every branch is decided from ``params``, which is already Python.
 """
 
 from __future__ import annotations
@@ -17,20 +18,24 @@ from mini_vllm.request import SamplingParams
 
 
 def apply_top_k(logits: torch.Tensor, top_k: torch.Tensor) -> torch.Tensor:
-    """Mask all but the top k per row. top_k: (N,) with -1 meaning disabled."""
+    """Mask all but the top k per row. top_k: (N,) with -1 meaning disabled.
+
+    A disabled row is handled arithmetically rather than branched on: k becomes the vocab
+    size, so the threshold is the smallest logit and nothing is masked. Branching would
+    mean reading a tensor on the host, which is a device sync.
+    """
     vocab = logits.shape[-1]
     k = torch.where(top_k > 0, top_k, torch.full_like(top_k, vocab)).clamp(max=vocab)
-    if bool((k >= vocab).all()):
-        return logits
     sorted_logits, _ = torch.sort(logits, descending=True, dim=-1)
     threshold = sorted_logits.gather(1, (k - 1).unsqueeze(1))
     return logits.masked_fill(logits < threshold, float("-inf"))
 
 
 def apply_top_p(logits: torch.Tensor, top_p: torch.Tensor) -> torch.Tensor:
-    """Nucleus filter per row. top_p: (N,) with 1.0 meaning disabled."""
-    if bool((top_p >= 1.0).all()):
-        return logits
+    """Nucleus filter per row. top_p: (N,) with 1.0 meaning disabled.
+
+    top_p = 1.0 masks nothing on its own, since cumulative - probs never exceeds 1.
+    """
     sorted_logits, sorted_idx = torch.sort(logits, descending=True, dim=-1)
     probs = torch.softmax(sorted_logits, dim=-1)
     cumulative = probs.cumsum(dim=-1)
@@ -58,16 +63,22 @@ class Sampler(nn.Module):
         def col(values, dtype):
             return torch.tensor(values, dtype=dtype, device=device)
 
+        # Every fast-path decision is made from `params`, which is already host-side
+        # Python. Deriving them from the logits instead would mean a `bool(tensor.all())`
+        # per call -- correct, but a pipeline stall on every decode step.
+        if all(p.is_greedy for p in params):
+            return logits.argmax(dim=-1)
+
         temperature = col([p.temperature for p in params], torch.float32)
         greedy = temperature == 0.0
-        if bool(greedy.all()):
-            return logits.argmax(dim=-1)
 
         # Divide by 1.0 for greedy rows so they are unaffected; their result is
         # overwritten by argmax at the end.
         logits = logits / torch.where(greedy, torch.ones_like(temperature), temperature).unsqueeze(1)
-        logits = apply_top_k(logits, col([p.top_k for p in params], torch.long))
-        logits = apply_top_p(logits, col([p.top_p for p in params], torch.float32))
+        if any(p.top_k > 0 for p in params):
+            logits = apply_top_k(logits, col([p.top_k for p in params], torch.long))
+        if any(p.top_p < 1.0 for p in params):
+            logits = apply_top_p(logits, col([p.top_p for p in params], torch.float32))
 
         probs = torch.softmax(logits, dim=-1)
         out = torch.empty(logits.shape[0], dtype=torch.long, device=device)
