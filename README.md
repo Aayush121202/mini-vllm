@@ -83,23 +83,13 @@ There is no gap at one slot (nothing to batch) or at 64 (every request fits in o
 | T4 | on | 408 ms | 30 ms | 2,128 |
 | T4 | off | 35 ms | 29 ms | 0 |
 
-On the M5, warm TTFT is 1.66x faster. On the T4 there is no latency gain (0.98x). My guess is that a 317-token prefill on a 0.5B model takes only a few milliseconds on a T4, so fixed per-step overhead dominates and skipping the prefix saves almost nothing. I have not verified this. The mechanism itself works on both devices (2,128 tokens reused, outputs identical to the uncached run). A longer prefix or a larger model should show the benefit, but this benchmark doesn't test that.
+On the M5, warm TTFT is 1.66x faster. On the T4 there is no latency gain (0.98x). My guess is that a 317-token prefill on a 0.5B model takes only a few milliseconds on a T4, so fixed per-step overhead dominates and skipping the prefix saves almost nothing. I have not verified this. The mechanism works on both devices (2,128 tokens reused, outputs identical to the uncached run). The 408 ms cold request on the T4 is likely one-time CUDA warmup; I haven't isolated it.
 
-The 408 ms cold request on the T4 is probably one-time CUDA warmup landing on whichever run came first. I haven't isolated it.
+### Notes
 
-### Limits of these numbers
+Paged attention is not faster per step than a contiguous cache: gathering blocks in PyTorch copies K/V every step, where a fused kernel would read it in place. Paging buys more concurrent sequences per GB, not raw speed.
 
-Paged attention is not faster per step than a contiguous cache. Gathering blocks in PyTorch copies K/V every step where a fused kernel would read them in place. Paging buys more concurrent sequences per GB of memory, not raw speed.
-
-### Measurement notes
-
-An earlier version of this README reported 6.6x over "static batching". That baseline never actually batched: it blocked admission whenever anything was running, so it degenerated into one request at a time. Static batching now fills a wave up to the concurrency limit, seals it, and drains it before admitting more, which is what HuggingFace does. The honest offline number was 1.19x.
-
-Two other measurement problems are worth recording. Throughput varied by almost 2x between runs until the benchmarks were warmed up, and TTFT p50 varied by more than 10x between a cold and a warm run. Everything above is a median of warmed trials, and the harness prints the spread.
-
-### A bug the CUDA run found
-
-`dtype="auto"` selected bfloat16 on the T4, and `test_accelerator_batch_invariance` failed: the same request produced different greedy tokens alone versus in a batch. `torch.cuda.is_bf16_supported()` returns `True` on Turing because it counts software emulation, but the T4 has no hardware bf16. The model was running in a slow, coarse emulated bf16, where batch-dependent rounding flipped near-tied argmaxes. Forcing fp16 or fp32 passed. The fix checks compute capability (8.0 or higher for bf16, otherwise fp16) and has unit tests for Turing, Ampere and non-CUDA devices. The M5 could never have caught this.
+An earlier version of this README reported 6.6x over "static batching", but that baseline never actually batched. It is fixed (static now fills a wave and drains it, as HuggingFace does), and the honest offline number is 1.19x. Benchmarks are also warmed up first, since cold runs varied by up to 10x.
 
 ## Quick start
 
@@ -172,10 +162,7 @@ Not implemented yet:
 - **Fused paged-attention kernel (Triton).** The block gather is the main remaining overhead. FlashAttention-2 isn't an option on a T4, so this needs a custom kernel. Planned.
 - **Chunked prefill.** A long prompt stalls decoding for a step. The attention path already supports it (`start_pos > 0`), but the scheduler doesn't use it yet. Planned.
 - **Tensor parallelism.** Single-GPU only. Planned.
-- **CUDA graphs.** Would cut launch overhead at small batch sizes, but needs static input buffers.
-- **Batched prefill.** One prefill per step.
-- **Swap-to-CPU.** Preempted requests are recomputed rather than swapped, which is less code and often cheaper than a PCIe round trip.
-- **Speculative decoding and quantisation.**
+- **CUDA graphs, batched prefill, swap-to-CPU, speculative decoding, quantisation.** Preempted requests are recomputed rather than swapped.
 
 ## Design notes
 
