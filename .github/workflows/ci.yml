@@ -11,12 +11,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
         with:
-          enable-cache: true
+          python-version: "3.12"
+          cache: pip
 
+      # CPU wheels: the runner has no GPU, and the default CUDA build is a ~2GB download.
       - name: Install
-        run: uv pip install --system -e ".[dev]"
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" --extra-index-url https://download.pytorch.org/whl/cpu
 
       - name: Lint
         run: ruff check .
