@@ -83,5 +83,9 @@ def parse_dtype(spec: str | torch.dtype, device: torch.device) -> torch.dtype:
         except KeyError:
             raise ValueError(f"unknown dtype {spec!r}; expected one of {sorted(_DTYPE_ALIASES)}")
     if device.type == "cuda":
-        return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        # Not torch.cuda.is_bf16_supported(): it counts software emulation, so it reports
+        # True on Turing (T4), which has no hardware bf16 and silently ran in a slow,
+        # coarse emulated bf16. Hardware bf16 starts at Ampere, compute capability 8.0.
+        major, _ = torch.cuda.get_device_capability(device)
+        return torch.bfloat16 if major >= 8 else torch.float16
     return torch.float32
